@@ -85,7 +85,7 @@ console.log(pageData)
             const pages = response?.pages || [];
 
             const stageOptions = pages
-                .filter((stage) => stage.order > pageData.order)
+                .filter((stage) => stage.order === (pageData.order + 2))
                 .map((stage) => ({
                     id: String(stage.id),
                     label: stage.title,
