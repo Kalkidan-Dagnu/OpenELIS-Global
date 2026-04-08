@@ -31,6 +31,25 @@ import { NotificationKinds } from "../../../../components/common/CustomNotificat
 import GBDManifestImportModal from "../../workflow/GBDManifestImportModal";
 import SampleGrid from "../../workflow/SampleGrid";
 
+/**
+ * GBDSampleReceptionPage - STAGE 1: Sample Reception & Registration
+ *
+ * Comprehensive sample creation page following Bioanalytical Lab pattern.
+ *
+ * STAGE 1 Process:
+ * ● Receive samples (DNA, RNA, tissues, isolates)
+ * ● Register in LMIS with metadata
+ * ● Assign to appropriate workflow (extraction, PCR, library prep, sequencing)
+ * ● Track volume/concentration and quality metrics if pre-assessed
+ *
+ * Features:
+ * - Single sample creation via form
+ * - Bulk sample creation via CSV manifest import
+ * - Progress tracking with counts
+ * - Sample grid display with bulk selection
+ * - Mark received (transition to workflow)
+ * - Edit metadata for received samples
+ */
 export const GBDSampleReceptionPageEnhanced = ({
                                                  samples = [],
                                                  pageData = {},
@@ -61,15 +80,18 @@ export const GBDSampleReceptionPageEnhanced = ({
    * Load samples for the page
    */
   const loadPageSamples = useCallback(() => {
-    if (!pageData?.id || String(pageData.id).startsWith("default-")) return;
-console.log(pageData)
-    getFromOpenElisServer(`/rest/notebook/page/${pageData.id}/samples`,
-        (response) => {
-          if (componentMounted.current && Array.isArray(response)) {
+    if (!pageData?.id || String(pageData.id).startsWith("default-")) {
+      return;
+    }
 
-            setPageSamples(response);
-          }
-        });
+    getFromOpenElisServer(
+      `/rest/notebook/page/${pageData.id}/samples`,
+      (response) => {
+        if (componentMounted.current && response && Array.isArray(response)) {
+          setPageSamples(response);
+        }
+      },
+    );
   }, [pageData?.id]);
 
 
@@ -179,122 +201,77 @@ console.log(pageData)
    * Mark samples complete
    */
   const handleMarkComplete = useCallback(() => {
-
     if (selectedSampleIds.length === 0) {
       setNotificationVisible(true);
-
       addNotification({
         kind: NotificationKinds.warning,
-        title: "No Samples Selected",
+        title: intl.formatMessage({
+          id: "notebook.gbd.noSamplesSelected.title",
+          defaultMessage: "No Samples Selected",
+        }),
       });
-
       return;
     }
 
     postToOpenElisServer(
-        `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
-        JSON.stringify({
-          sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
-          status: "COMPLETED",
-        }),
-        (status) => {
+      `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
+      JSON.stringify({
+        sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
+        status: "COMPLETED",
+      }),
+      (status) => {
+        if (status === 200) {
+          setSelectedSampleIds([]);
+          setNotificationVisible(true);
+          addNotification({
+            kind: NotificationKinds.success,
+            title: intl.formatMessage({
+              id: "notebook.gbd.reception.samplesCompleted",
+              defaultMessage: "Samples Completed",
+            }),
+            message: intl.formatMessage(
+              {
+                id: "notebook.gbd.reception.samplesCompletedMessage",
+                defaultMessage:
+                  "{count} sample(s) marked as complete and moved to the next workflow step",
+              },
+              { count: selectedSampleIds.length },
+            ),
+          });
 
-          if (status === 200) {
-
-            setSelectedSampleIds([]);
-
-            setNotificationVisible(true);
-            addNotification({
-              kind: NotificationKinds.success,
-              title: "Samples Completed",
-            });
-
+          setTimeout(() => {
             loadPageSamples();
-
             if (onSampleStatusChange) {
               onSampleStatusChange();
             }
-
-          } else {
-
-            setNotificationVisible(true);
-            addNotification({
-              kind: NotificationKinds.error,
-              title: "Error updating samples",
-            });
-
-          }
-
+          }, 500);
+        } else {
+          setNotificationVisible(true);
+          addNotification({
+            kind: NotificationKinds.error,
+            title: intl.formatMessage({
+              id: "notebook.gbd.reception.error",
+              defaultMessage: "Error",
+            }),
+            message: intl.formatMessage({
+              id: "notebook.gbd.reception.statusError",
+              defaultMessage:
+                "Failed to mark samples as complete. Please try again.",
+            }),
+          });
         }
+      },
     );
+  }, [
+    selectedSampleIds,
+    pageData.id,
+    intl,
+    setNotificationVisible,
+    addNotification,
+    loadPageSamples,
+    onSampleStatusChange,
+  ]);
 
-  }, [selectedSampleIds, pageData.id, loadPageSamples]);
-
-  /**
-   * Lifecycle
-   */
-  useEffect(() => {
-
-    componentMounted.current = true;
-    loadPageSamples();
-    if(transferModalOpen && pageData.id) {
-      loadStages(pageData.id);
-    }
-
-    return () => {
-      componentMounted.current = false;
-    };
-
-  }, [loadPageSamples, transferModalOpen, pageData.id, loadStages]);
-
-  /**
-   * Sample filters
-   */
-  const pendingSamples = useMemo(
-      () => pageSamples.filter((s) => s.status === "PENDING" || s.status === "AWAITING"),
-      [pageSamples]
-  );
-
-  const receivedSamples = useMemo(
-      () => pageSamples.filter((s) => s.status === "IN_PROGRESS" || s.status === "COMPLETED"),
-      [pageSamples]
-  );
-
-  /**
-   * Status tag renderer
-   */
-  const renderStatus = (sample) => {
-
-    const status = sample.status || "PENDING";
-
-    switch (status.toUpperCase()) {
-
-      case "COMPLETED":
-        return (
-            <Tag type="green" size="sm" renderIcon={CheckmarkFilled}>
-              Completed
-            </Tag>
-        );
-
-      case "IN_PROGRESS":
-        return (
-            <Tag type="blue" size="sm">
-              In Progress
-            </Tag>
-        );
-
-      default:
-        return (
-            <Tag type="gray" size="sm" renderIcon={Pending}>
-              Pending
-            </Tag>
-        );
-    }
-  };
-
-  /**
-   * COMPONENT RETURN (THIS WAS YOUR BIG BUG)
-   */
   return (
       <div className="gbd-sample-reception-page">
 
