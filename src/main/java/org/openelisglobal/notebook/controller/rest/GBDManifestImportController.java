@@ -249,62 +249,41 @@ public class GBDManifestImportController extends BaseRestController {
      * Marks the current page entries as COMPLETED and creates new PENDING entries
      * in the destination page for processing.
      */
-    @Transactional
     @PostMapping(value = "/workflow/transfer", produces = MediaType.APPLICATION_JSON_VALUE)
     @ResponseBody
-    public ResponseEntity<?> transferToStage(
+    public ResponseEntity< Map<String, Object>> transferToStage(
             @RequestBody TransferRequest request,
             HttpServletRequest httpRequest) {
 
         String userId = getSysUserId(httpRequest);
 
-        List<String> sampleItemIds = request.getSampleItemIds();
+        notebookPageSampleService.bulkUpdateStatus(request.toPageId, request.sampleItemIds, NotebookPageSample.Status.PENDING,userId,true);
+        List<Integer> sampleItemIds = request.getSampleItemIds();
         Integer fromPageId = request.getFromPageId();
         Integer toPageId = request.getToPageId();
-
+        Map<String, Object> response = new HashMap<>();
         if(sampleItemIds == null || sampleItemIds.isEmpty()){
-            return ResponseEntity.badRequest().body("No samples provided");
+            response.put("message", "No Sample provided.");
+            return ResponseEntity.badRequest().body(response);
         }
 
         NoteBookPage nextPage = noteBookPageService.get(toPageId);
 
         if(nextPage == null){
-            return ResponseEntity.badRequest().body("Destination page not found");
+            response.put("message", "Destination page not found.");
+            return ResponseEntity.badRequest().body(response);
         }
 
-        for(String sampleItemId : sampleItemIds){
-
-            NotebookPageSample current =
-                    notebookPageSampleService.getBySampleItemIdAndPageId(sampleItemId, fromPageId);
-
-            if(current == null){
-                continue;
-            }
-
-            current.setStatus(NotebookPageSample.Status.COMPLETED);
-            notebookPageSampleService.update(current);
-
-            NotebookPageSample next = new NotebookPageSample();
-            next.setNotebookPage(nextPage);
-            next.setSampleItemId(sampleItemId);
-            next.setStatus(NotebookPageSample.Status.PENDING);
-            next.setSysUserId(userId);
-
-            if(current.getData()!=null){
-                next.setData(new HashMap<>(current.getData()));
-            }
-
-            notebookPageSampleService.insert(next);
-        }
-
-        return ResponseEntity.ok("Samples transferred to next stage");
+        response.put("success", true);
+        response.put("transferredCount", request.sampleItemIds.size());
+        return ResponseEntity.ok(response);
     }
 
 
     /** Request body for transfer operation. */
     public static class TransferRequest {
         @Setter
-        private List<String> sampleItemIds;
+        private List<Integer> sampleItemIds;
         @Setter
         private Integer fromPageId;
         @Setter
@@ -313,7 +292,7 @@ public class GBDManifestImportController extends BaseRestController {
         @Setter
         private String notes;
 
-        public List<String> getSampleItemIds() {
+        public List<Integer> getSampleItemIds() {
             return sampleItemIds;
         }
 
@@ -338,7 +317,6 @@ public class GBDManifestImportController extends BaseRestController {
         }
 
     }
-
 
     @Override
     protected String getSysUserId(HttpServletRequest request) {

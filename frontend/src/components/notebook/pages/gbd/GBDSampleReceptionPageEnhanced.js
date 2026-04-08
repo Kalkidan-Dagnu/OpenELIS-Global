@@ -7,8 +7,9 @@ import React, {
   useRef,
 } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
-import { Grid, Column, Button, Tile, Tag } from "@carbon/react";
+import { Grid, Column, Button, Modal, Tile, Tag, Dropdown, TextInput, Loading } from "@carbon/react";
 import {
+  Archive,
   Upload,
   Edit,
   Checkmark,
@@ -16,6 +17,7 @@ import {
   CheckmarkFilled,
   Pending,
 } from "@carbon/icons-react";
+
 import { usePermissions } from "../../../../hooks/usePermissions";
 import { Permissions } from "../../../../constants/roles";
 import PermissionGate from "../../../security/PermissionGate";
@@ -23,549 +25,372 @@ import { NotificationContext } from "../../../layout/Layout";
 import {
   postToOpenElisServer,
   getFromOpenElisServer,
+  postToOpenElisServerJsonResponse,
 } from "../../../utils/Utils";
 import { NotificationKinds } from "../../../../components/common/CustomNotification";
 import GBDManifestImportModal from "../../workflow/GBDManifestImportModal";
 import SampleGrid from "../../workflow/SampleGrid";
 
-/**
- * GBDSampleReceptionPage - STAGE 1: Sample Reception & Registration
- *
- * Comprehensive sample creation page following Bioanalytical Lab pattern.
- *
- * STAGE 1 Process:
- * ● Receive samples (DNA, RNA, tissues, isolates)
- * ● Register in LMIS with metadata
- * ● Assign to appropriate workflow (extraction, PCR, library prep, sequencing)
- * ● Track volume/concentration and quality metrics if pre-assessed
- *
- * Features:
- * - Single sample creation via form
- * - Bulk sample creation via CSV manifest import
- * - Progress tracking with counts
- * - Sample grid display with bulk selection
- * - Mark received (transition to workflow)
- * - Edit metadata for received samples
- */
 export const GBDSampleReceptionPageEnhanced = ({
-  samples = [],
-  pageData = {},
-  entryId,
-  onSampleUpdate,
-  onSampleStatusChange,
-  isLoading = false,
-}) => {
+                                                 samples = [],
+                                                 pageData = {},
+                                                 entryId,
+                                                 onSampleUpdate,
+                                                 onSampleStatusChange,
+                                                 isLoading = false,
+                                                 notebookId
+                                               }) => {
+
   const intl = useIntl();
   const { setNotificationVisible, addNotification } =
-    useContext(NotificationContext);
+      useContext(NotificationContext);
 
   const componentMounted = useRef(false);
+
   const [isManifestModalOpen, setIsManifestModalOpen] = useState(false);
   const [selectedSampleIds, setSelectedSampleIds] = useState([]);
   const [pageSamples, setPageSamples] = useState(samples || []);
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  const [selectedStage, setSelectedStage] = useState(null);
+  const [stages, setStages] = useState([]);
+  const [transferNotes, setTransferNotes] = useState("");
+  const [error, setError] = useState(null);
 
+  /**
+   * Load samples for the page
+   */
   const loadPageSamples = useCallback(() => {
-    if (!pageData?.id || String(pageData.id).startsWith("default-")) {
-      return;
-    }
+    if (!pageData?.id || String(pageData.id).startsWith("default-")) return;
+console.log(pageData)
+    getFromOpenElisServer(`/rest/notebook/page/${pageData.id}/samples`,
+        (response) => {
+          if (componentMounted.current && Array.isArray(response)) {
 
-    getFromOpenElisServer(
-      `/rest/notebook/page/${pageData.id}/samples`,
-      (response) => {
-        if (componentMounted.current && response && Array.isArray(response)) {
-          setPageSamples(response);
-        }
-      },
-    );
+            setPageSamples(response);
+          }
+        });
   }, [pageData?.id]);
 
-  useEffect(() => {
-    componentMounted.current = true;
-    loadPageSamples();
 
-    return () => {
-      componentMounted.current = false;
-    };
-  }, [pageData?.id, loadPageSamples]);
+  /**
+   * Load workflow stages
+   */
+    const loadStages = useCallback(() => {
+        if (!notebookId || !pageData?.order) return;
 
-  const pendingSamples = useMemo(
-    () =>
-      pageSamples.filter(
-        (s) => s.status === "PENDING" || s.status === "AWAITING",
-      ),
-    [pageSamples],
-  );
+        getFromOpenElisServer(`/rest/notebook/view/${notebookId}`, (response) => {
+            if (!componentMounted.current) return;
 
-  const receivedSamples = useMemo(
-    () =>
-      pageSamples.filter(
-        (s) => s.status === "IN_PROGRESS" || s.status === "COMPLETED",
-      ),
-    [pageSamples],
-  );
+            const pages = response?.pages || [];
 
-  const renderStatus = (sample) => {
-    const status = sample.status || "PENDING";
+            const stageOptions = pages
+                .filter((stage) => stage.order > pageData.order)
+                .map((stage) => ({
+                    id: String(stage.id),
+                    label: stage.title,
+                }));
 
-    switch (status.toUpperCase()) {
-      case "COMPLETED":
-        return (
-          <Tag type="green" size="sm" renderIcon={CheckmarkFilled}>
-            <FormattedMessage
-              id="notebook.gbd.status.completed"
-              defaultMessage="Completed"
-            />
-          </Tag>
-        );
-      case "IN_PROGRESS":
-        return (
-          <Tag type="blue" size="sm">
-            <FormattedMessage
-              id="notebook.gbd.status.inProgress"
-              defaultMessage="In Progress"
-            />
-          </Tag>
-        );
-      default:
-        return (
-          <Tag type="gray" size="sm" renderIcon={Pending}>
-            <FormattedMessage
-              id="notebook.gbd.status.pending"
-              defaultMessage="Pending"
-            />
-          </Tag>
-        );
-    }
-  };
-
-  const handleManifestImport = useCallback(
-    async (importResult) => {
-      try {
-        if (importResult && importResult.success) {
-          setNotificationVisible(true);
-          addNotification({
-            kind: NotificationKinds.success,
-            title: intl.formatMessage({
-              id: "notebook.gbd.manifest.imported",
-              defaultMessage: "Manifest Imported",
-            }),
-            message: intl.formatMessage(
-              {
-                id: "notebook.gbd.manifest.importedMessage",
-                defaultMessage:
-                  "{count} samples have been created successfully",
-              },
-              { count: importResult.totalCreated || 0 },
-            ),
-          });
-
-          setIsManifestModalOpen(false);
-
-          loadPageSamples();
-
-          if (onSampleUpdate) {
-            onSampleUpdate();
-          }
-        }
-      } catch (error) {
-        console.error("Error handling manifest import result:", error);
-        setNotificationVisible(true);
-        addNotification({
-          kind: NotificationKinds.error,
-          title: intl.formatMessage({
-            id: "notebook.gbd.manifest.importError",
-            defaultMessage: "Import Error",
-          }),
-          message: error.message,
+            setStages(stageOptions);
         });
-      }
-    },
-    [
-      intl,
-      setNotificationVisible,
-      addNotification,
-      onSampleUpdate,
-      loadPageSamples,
-    ],
-  );
+    }, [notebookId, pageData?.order]);
 
+    /**
+     * Transfer samples to another stage
+     */
+    const handleTransferToStage = () => {
+        if (!selectedStage) {
+            setError("Please select a stage");
+            return;
+        }
+
+        if (!selectedSampleIds?.length) {
+            setError("No samples selected for transfer");
+            return;
+        }
+
+        setError(null);
+        setTransferring(true);
+
+        const requestBody = {
+            sampleItemIds: selectedSampleIds,
+            fromPageId: pageData.id,
+            toPageId: selectedStage.id,
+            status: "PENDING",
+            notes: transferNotes,
+        };
+
+        const completeTransfer = () => {
+            postToOpenElisServer(
+                `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
+                JSON.stringify({
+                    sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
+                    status: "COMPLETED",
+                }),
+                (status) => {
+                    if (status !== 200) {
+                        setError("Failed updating sample status");
+                        setTransferring(false);
+                        return;
+                    }
+
+                    // refresh UI
+                    setSelectedSampleIds([]);
+                    loadPageSamples();
+
+                    if (onSampleStatusChange) {
+                        onSampleStatusChange();
+                    }
+
+                    setTransferModalOpen(false);
+                    setNotificationVisible(true);
+
+                    addNotification({
+                        kind: NotificationKinds.success,
+                        title: "Samples transferred successfully",
+                    });
+
+                    setTransferring(false);
+                }
+            );
+        };
+
+        postToOpenElisServerJsonResponse(
+            `/rest/notebook/gbd/workflow/transfer`,
+            JSON.stringify(requestBody),
+            (response) => {
+                console.log("Transfer response:", response);
+
+                if (!response?.success) {
+                    setError("Transfer failed");
+                    setTransferring(false);
+                    return;
+                }
+
+                completeTransfer();
+            },
+            () => {
+                setError("Transfer failed");
+                setTransferring(false);
+            }
+        );
+    };
+  /**
+   * Mark samples complete
+   */
   const handleMarkComplete = useCallback(() => {
+
     if (selectedSampleIds.length === 0) {
       setNotificationVisible(true);
+
       addNotification({
         kind: NotificationKinds.warning,
-        title: intl.formatMessage({
-          id: "notebook.gbd.noSamplesSelected.title",
-          defaultMessage: "No Samples Selected",
-        }),
+        title: "No Samples Selected",
       });
+
       return;
     }
 
     postToOpenElisServer(
-      `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
-      JSON.stringify({
-        sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
-        status: "COMPLETED",
-      }),
-      (status) => {
-        if (status === 200) {
-          setSelectedSampleIds([]);
-          setNotificationVisible(true);
-          addNotification({
-            kind: NotificationKinds.success,
-            title: intl.formatMessage({
-              id: "notebook.gbd.reception.samplesCompleted",
-              defaultMessage: "Samples Completed",
-            }),
-            message: intl.formatMessage(
-              {
-                id: "notebook.gbd.reception.samplesCompletedMessage",
-                defaultMessage:
-                  "{count} sample(s) marked as complete and moved to the next workflow step",
-              },
-              { count: selectedSampleIds.length },
-            ),
-          });
+        `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
+        JSON.stringify({
+          sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
+          status: "COMPLETED",
+        }),
+        (status) => {
 
-          setTimeout(() => {
+          if (status === 200) {
+
+            setSelectedSampleIds([]);
+
+            setNotificationVisible(true);
+            addNotification({
+              kind: NotificationKinds.success,
+              title: "Samples Completed",
+            });
+
             loadPageSamples();
+
             if (onSampleStatusChange) {
               onSampleStatusChange();
             }
-          }, 500);
-        } else {
-          setNotificationVisible(true);
-          addNotification({
-            kind: NotificationKinds.error,
-            title: intl.formatMessage({
-              id: "notebook.gbd.reception.error",
-              defaultMessage: "Error",
-            }),
-            message: intl.formatMessage({
-              id: "notebook.gbd.reception.statusError",
-              defaultMessage:
-                "Failed to mark samples as complete. Please try again.",
-            }),
-          });
+
+          } else {
+
+            setNotificationVisible(true);
+            addNotification({
+              kind: NotificationKinds.error,
+              title: "Error updating samples",
+            });
+
+          }
+
         }
-      },
     );
-  }, [
-    selectedSampleIds,
-    pageData.id,
-    intl,
-    setNotificationVisible,
-    addNotification,
-    loadPageSamples,
-    onSampleStatusChange,
-  ]);
 
+  }, [selectedSampleIds, pageData.id, loadPageSamples]);
+
+  /**
+   * Lifecycle
+   */
+  useEffect(() => {
+
+    componentMounted.current = true;
+    loadPageSamples();
+    if(transferModalOpen && pageData.id) {
+      loadStages(pageData.id);
+    }
+
+    return () => {
+      componentMounted.current = false;
+    };
+
+  }, [loadPageSamples, transferModalOpen, pageData.id, loadStages]);
+
+  /**
+   * Sample filters
+   */
+  const pendingSamples = useMemo(
+      () => pageSamples.filter((s) => s.status === "PENDING" || s.status === "AWAITING"),
+      [pageSamples]
+  );
+
+  const receivedSamples = useMemo(
+      () => pageSamples.filter((s) => s.status === "IN_PROGRESS" || s.status === "COMPLETED"),
+      [pageSamples]
+  );
+
+  /**
+   * Status tag renderer
+   */
+  const renderStatus = (sample) => {
+
+    const status = sample.status || "PENDING";
+
+    switch (status.toUpperCase()) {
+
+      case "COMPLETED":
+        return (
+            <Tag type="green" size="sm" renderIcon={CheckmarkFilled}>
+              Completed
+            </Tag>
+        );
+
+      case "IN_PROGRESS":
+        return (
+            <Tag type="blue" size="sm">
+              In Progress
+            </Tag>
+        );
+
+      default:
+        return (
+            <Tag type="gray" size="sm" renderIcon={Pending}>
+              Pending
+            </Tag>
+        );
+    }
+  };
+
+  /**
+   * COMPONENT RETURN (THIS WAS YOUR BIG BUG)
+   */
   return (
-    <div className="gbd-sample-reception-page">
-      {/* Page Section Header */}
-      <div className="page-section-header">
-        <h4>
-          <FormattedMessage
-            id="notebook.gbd.reception.title"
-            defaultMessage="Sample Reception & Registration"
-          />
-        </h4>
-        <p className="page-description">
-          <FormattedMessage
-            id="notebook.gbd.reception.description"
-            defaultMessage="Register incoming samples and assign to appropriate workflow"
-          />
-        </p>
-      </div>
+      <div className="gbd-sample-reception-page">
 
-      {/* Progress Summary */}
-      <Grid fullWidth className="progress-section">
-        <Column lg={16} md={8} sm={4}>
-          <div className="progress-tiles">
-            <Tile className="progress-tile">
-              <span className="progress-label">
-                <FormattedMessage
-                  id="notebook.gbd.reception.awaitingReception"
-                  defaultMessage="Awaiting Reception"
-                />
-              </span>
-              <span className="progress-value">{pendingSamples.length}</span>
+        <Grid fullWidth>
+          <Column lg={16}>
+            <Tile>
+              Pending Samples: {pendingSamples.length}
             </Tile>
-            <Tile className="progress-tile">
-              <span className="progress-label">
-                <FormattedMessage
-                  id="notebook.gbd.reception.samplesReceived"
-                  defaultMessage="Samples Received"
-                />
-              </span>
-              <span className="progress-value">{receivedSamples.length}</span>
+            <Tile>
+              Received Samples: {receivedSamples.length}
             </Tile>
-          </div>
-        </Column>
-      </Grid>
+          </Column>
+        </Grid>
 
-      {/* Action Buttons */}
-      <div className="page-actions-bar">
-        <PermissionGate
-          roles={Permissions.REGISTER_SAMPLES}
-          disabledTooltip={intl.formatMessage({
-            id: "notebook.gbd.reception.insufficientPermissions.import",
-            defaultMessage: "Insufficient permissions to import samples",
-          })}
-        >
-          <Button
-            kind="secondary"
-            size="sm"
-            renderIcon={Upload}
-            onClick={() => setIsManifestModalOpen(true)}
-          >
-            <FormattedMessage
-              id="notebook.gbd.reception.importManifest"
-              defaultMessage="Import Manifest"
-            />
-          </Button>
-        </PermissionGate>
-        <PermissionGate
-          roles={Permissions.UPDATE_SAMPLES}
-          disabledTooltip={intl.formatMessage({
-            id: "notebook.gbd.reception.insufficientPermissions.complete",
-            defaultMessage: "Insufficient permissions to mark samples complete",
-          })}
-        >
-          <Button
-            kind="secondary"
-            size="sm"
-            renderIcon={Checkmark}
-            onClick={handleMarkComplete}
-            disabled={selectedSampleIds.length === 0}
-          >
-            <FormattedMessage
-              id="notebook.gbd.reception.markComplete"
-              defaultMessage="Mark as Complete ({count})"
-              values={{ count: selectedSampleIds.length }}
-            />
-          </Button>
-        </PermissionGate>
-        <Button
-          kind="ghost"
-          size="sm"
-          renderIcon={Renew}
-          onClick={loadPageSamples}
-        >
-          <FormattedMessage
-            id="notebook.gbd.reception.refresh"
-            defaultMessage="Refresh"
-          />
-        </Button>
-      </div>
+        <div className="page-actions-bar">
 
-      {/* Awaiting Reception Section */}
-      <div className="sample-table-section">
-        <div className="table-section-header">
-          <h5>
-            <FormattedMessage
-              id="notebook.gbd.reception.awaitingReception"
-              defaultMessage="Awaiting Reception"
-            />
-            <Tag type="gray" size="sm" className="count-tag">
-              {pendingSamples.length}
-            </Tag>
-          </h5>
-          <p className="table-section-description">
-            <FormattedMessage
-              id="notebook.gbd.reception.awaitingDescription"
-              defaultMessage="Samples awaiting reception verification. Select samples and mark as received to move them to the completed section."
-            />
-          </p>
+          <Button
+              kind="secondary"
+              renderIcon={Upload}
+              onClick={() => setIsManifestModalOpen(true)}
+          >
+            Import Manifest
+          </Button>
+
+          <Button
+              kind="secondary"
+              renderIcon={Checkmark}
+              disabled={selectedSampleIds.length === 0}
+              onClick={handleMarkComplete}
+          >
+            Mark Complete ({selectedSampleIds.length})
+          </Button>
+
+          <Button
+              kind="primary"
+              renderIcon={Archive}
+              disabled={selectedSampleIds.length === 0}
+              onClick={() => setTransferModalOpen(true)}
+          >
+            Transfer ({selectedSampleIds.length})
+          </Button>
+
+          <Button
+              kind="ghost"
+              renderIcon={Renew}
+              onClick={loadPageSamples}
+          >
+            Refresh
+          </Button>
+
         </div>
 
-        {pendingSamples.length === 0 ? (
-          <div className="empty-table-state">
-            <FormattedMessage
-              id="notebook.gbd.reception.noSamplesAwaiting"
-              defaultMessage="No samples awaiting reception"
-            />
-          </div>
-        ) : (
-          <>
-            <SampleGrid
-              gridId="gbd-reception-pending"
-              samples={pendingSamples}
-              selectedIds={selectedSampleIds}
-              onSelectionChange={setSelectedSampleIds}
-              showSelection={true}
-              columns={[
-                {
-                  key: "externalId",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.sampleId",
-                    defaultMessage: "Sample ID",
-                  }),
-                },
-                {
-                  key: "sampleType",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.sampleType",
-                    defaultMessage: "Sample Type",
-                  }),
-                  render: (_v, sample) => sample.data?.sampleType || "-",
-                },
-                {
-                  key: "source",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.source",
-                    defaultMessage: "Source",
-                  }),
-                  render: (_v, sample) => sample.data?.source || "-",
-                },
-                {
-                  key: "collectionDate",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.collectionDate",
-                    defaultMessage: "Collection Date",
-                  }),
-                  render: (_v, sample) => sample.data?.collectionDate || "-",
-                },
-                {
-                  key: "volumeConcentration",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.volumeConcentration",
-                    defaultMessage: "Concentration",
-                  }),
-                  render: (_v, sample) =>
-                    sample.data?.volumeConcentration || "-",
-                },
-                {
-                  key: "operator",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.operator",
-                    defaultMessage: "Operator",
-                  }),
-                  render: (_v, sample) =>
-                    sample.data?.operator ||
-                    sample.data?.processingMetadata?.operator ||
-                    "-",
-                },
-                {
-                  key: "status",
-                  header: intl.formatMessage({
-                    id: "notebook.gbd.reception.status",
-                    defaultMessage: "Status",
-                  }),
-                  render: (_v, sample) => renderStatus(sample),
-                },
-              ]}
-            />
-          </>
-        )}
-      </div>
+        <SampleGrid
+            gridId="gbd-reception"
+            samples={pendingSamples}
+            selectedIds={selectedSampleIds}
+            onSelectionChange={setSelectedSampleIds}
+            showSelection={true}
+        />
 
-      {/* Received Samples Section */}
-      <div className="sample-table-section">
-        <div className="table-section-header">
-          <h5>
-            <FormattedMessage
-              id="notebook.gbd.reception.samplesReceived"
-              defaultMessage="Samples Received"
-            />
-            <Tag type="green" size="sm" className="count-tag">
-              {receivedSamples.length}
-            </Tag>
-          </h5>
-          <p className="table-section-description">
-            <FormattedMessage
-              id="notebook.gbd.reception.receivedDescription"
-              defaultMessage="Samples that have been received and are ready for the next workflow step."
-            />
-          </p>
-        </div>
+        <GBDManifestImportModal
+            open={isManifestModalOpen}
+            onClose={() => setIsManifestModalOpen(false)}
+            entryId={entryId}
+            onImportSuccess={loadPageSamples}
+        />
 
-        {receivedSamples.length === 0 ? (
-          <div className="empty-table-state">
-            <FormattedMessage
-              id="notebook.gbd.reception.noSamplesReceived"
-              defaultMessage="No received samples yet"
-            />
-          </div>
-        ) : (
-          <SampleGrid
-            gridId="gbd-reception-received"
-            samples={receivedSamples}
-            selectedIds={[]}
-            onSelectionChange={() => {}}
-            showSelection={false}
-            columns={[
-              {
-                key: "externalId",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.sampleId",
-                  defaultMessage: "Sample ID",
-                }),
-              },
-              {
-                key: "sampleType",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.sampleType",
-                  defaultMessage: "Sample Type",
-                }),
-                render: (_v, sample) => sample.data?.sampleType || "-",
-              },
-              {
-                key: "source",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.source",
-                  defaultMessage: "Source",
-                }),
-                render: (_v, sample) => sample.data?.source || "-",
-              },
-              {
-                key: "collectionDate",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.collectionDate",
-                  defaultMessage: "Collection Date",
-                }),
-                render: (_v, sample) => sample.data?.collectionDate || "-",
-              },
-              {
-                key: "volumeConcentration",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.volumeConcentration",
-                  defaultMessage: "Concentration",
-                }),
-                render: (_v, sample) => sample.data?.volumeConcentration || "-",
-              },
-              {
-                key: "operator",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.operator",
-                  defaultMessage: "Operator",
-                }),
-                render: (_v, sample) =>
-                  sample.data?.operator ||
-                  sample.data?.processingMetadata?.operator ||
-                  "-",
-              },
-              {
-                key: "status",
-                header: intl.formatMessage({
-                  id: "notebook.gbd.reception.status",
-                  defaultMessage: "Status",
-                }),
-                render: (_v, sample) => renderStatus(sample),
-              },
-            ]}
+        <Modal
+            open={transferModalOpen}
+            modalHeading="Transfer Samples"
+            primaryButtonText="Transfer"
+            secondaryButtonText="Cancel"
+            onRequestClose={() => setTransferModalOpen(false)}
+            onRequestSubmit={handleTransferToStage}
+        >
+
+          {transferring && <Loading withOverlay />}
+
+          <Dropdown
+              id="stage-select"
+              titleText="Stage"
+              items={stages}
+              selectedItem={selectedStage}
+              itemToString={(item) => item?.label || ""}
+              onChange={({ selectedItem }) => setSelectedStage(selectedItem)}
           />
-        )}
-      </div>
 
-      {/* Manifest Import Modal */}
-      <GBDManifestImportModal
-        open={isManifestModalOpen}
-        onClose={() => setIsManifestModalOpen(false)}
-        entryId={entryId}
-        onImportSuccess={handleManifestImport}
-      />
-    </div>
+          <TextInput
+              id="transfer-notes"
+              labelText="Transfer Notes"
+              value={transferNotes}
+              onChange={(e) => setTransferNotes(e.target.value)}
+          />
+
+        </Modal>
+
+      </div>
   );
 };
