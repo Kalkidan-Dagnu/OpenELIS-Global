@@ -7,6 +7,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
+import lombok.Setter;
 import org.openelisglobal.common.rest.BaseRestController;
 import org.openelisglobal.login.valueholder.UserSessionData;
 import org.openelisglobal.notebook.form.GBDManifestImportForm;
@@ -14,19 +16,17 @@ import org.openelisglobal.notebook.service.GBDManifestImportService;
 import org.openelisglobal.notebook.service.GBDManifestImportService.GBDManifestImportResult;
 import org.openelisglobal.notebook.service.GBDManifestImportService.ParseError;
 import org.openelisglobal.notebook.service.GBDManifestImportService.ParsedManifest;
+import org.openelisglobal.notebook.service.NoteBookPageService;
 import org.openelisglobal.notebook.service.NotebookEntryService;
+import org.openelisglobal.notebook.service.NotebookPageSampleService;
+import org.openelisglobal.notebook.valueholder.NoteBookPage;
 import org.openelisglobal.notebook.valueholder.NotebookEntry;
+import org.openelisglobal.notebook.valueholder.NotebookPageSample;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestPart;
-import org.springframework.web.bind.annotation.ResponseBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
@@ -54,6 +54,11 @@ public class GBDManifestImportController extends BaseRestController {
     @Autowired
     private NotebookEntryService notebookEntryService;
 
+    @Autowired
+    private NoteBookPageService noteBookPageService;
+
+    @Autowired
+    private NotebookPageSampleService notebookPageSampleService;
     /**
      * Get valid sample types for the GBD laboratory with pagination and filtering.
      *
@@ -237,6 +242,80 @@ public class GBDManifestImportController extends BaseRestController {
             errorResponse.put("error", "Failed to read CSV file: " + e.getMessage());
             return ResponseEntity.badRequest().body(errorResponse);
         }
+    }
+
+    /**
+     * Transfers samples from the source notebook page to SELECTED STAGE.
+     * Marks the current page entries as COMPLETED and creates new PENDING entries
+     * in the destination page for processing.
+     */
+    @PostMapping(value = "/workflow/transfer", produces = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseBody
+    public ResponseEntity< Map<String, Object>> transferToStage(
+            @RequestBody TransferRequest request,
+            HttpServletRequest httpRequest) {
+
+        String userId = getSysUserId(httpRequest);
+
+        notebookPageSampleService.bulkUpdateStatus(request.toPageId, request.sampleItemIds, NotebookPageSample.Status.PENDING,userId,true);
+        List<Integer> sampleItemIds = request.getSampleItemIds();
+        Integer fromPageId = request.getFromPageId();
+        Integer toPageId = request.getToPageId();
+        Map<String, Object> response = new HashMap<>();
+        if(sampleItemIds == null || sampleItemIds.isEmpty()){
+            response.put("message", "No Sample provided.");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        NoteBookPage nextPage = noteBookPageService.get(toPageId);
+
+        if(nextPage == null){
+            response.put("message", "Destination page not found.");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        response.put("success", true);
+        response.put("transferredCount", request.sampleItemIds.size());
+        return ResponseEntity.ok(response);
+    }
+
+
+    /** Request body for transfer operation. */
+    public static class TransferRequest {
+        @Setter
+        private List<Integer> sampleItemIds;
+        @Setter
+        private Integer fromPageId;
+        @Setter
+        private Integer toPageId;
+        private String status;
+        @Setter
+        private String notes;
+
+        public List<Integer> getSampleItemIds() {
+            return sampleItemIds;
+        }
+
+        public Integer getFromPageId() {
+            return fromPageId;
+        }
+
+        public Integer getToPageId() {
+            return toPageId;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+
+        public void setStatus(String locationType) {
+            this.status = status;
+        }
+
+        public String getNotes() {
+            return notes;
+        }
+
     }
 
     @Override
