@@ -15,6 +15,7 @@ import {
   Renew,
   CheckmarkFilled,
   Pending,
+  Modal, Dropdown, TextInput, Loading
 } from "@carbon/icons-react";
 import { usePermissions } from "../../../../hooks/usePermissions";
 import { Permissions } from "../../../../constants/roles";
@@ -23,6 +24,7 @@ import { NotificationContext } from "../../../layout/Layout";
 import {
   postToOpenElisServer,
   getFromOpenElisServer,
+  postToOpenElisServerJsonResponse
 } from "../../../utils/Utils";
 import { NotificationKinds } from "../../../../components/common/CustomNotification";
 import GBDManifestImportModal from "../../workflow/GBDManifestImportModal";
@@ -54,6 +56,7 @@ export const GBDSampleReceptionPageEnhanced = ({
   onSampleUpdate,
   onSampleStatusChange,
   isLoading = false,
+  notebookId
 }) => {
   const intl = useIntl();
   const { setNotificationVisible, addNotification } =
@@ -63,6 +66,12 @@ export const GBDSampleReceptionPageEnhanced = ({
   const [isManifestModalOpen, setIsManifestModalOpen] = useState(false);
   const [selectedSampleIds, setSelectedSampleIds] = useState([]);
   const [pageSamples, setPageSamples] = useState(samples || []);
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  const [selectedStage, setSelectedStage] = useState(null);
+  const [stages, setStages] = useState([]);
+  const [transferNotes, setTransferNotes] = useState("");
+  const [error, setError] = useState(null);
 
   const loadPageSamples = useCallback(() => {
     if (!pageData?.id || String(pageData.id).startsWith("default-")) {
@@ -78,6 +87,110 @@ export const GBDSampleReceptionPageEnhanced = ({
       },
     );
   }, [pageData?.id]);
+
+  /**
+   * Load workflow stages
+   */
+  const loadStages = useCallback(() => {
+    if (!notebookId || !pageData?.order) return;
+
+    getFromOpenElisServer(`/rest/notebook/view/${notebookId}`, (response) => {
+      if (!componentMounted.current) return;
+
+      const pages = response?.pages || [];
+
+      const stageOptions = pages
+          .filter((stage) => stage.order === (pageData.order + 2))
+          .map((stage) => ({
+            id: String(stage.id),
+            label: stage.title,
+          }));
+
+      setStages(stageOptions);
+    });
+  }, [notebookId, pageData?.order]);
+
+
+  /**
+   * Transfer samples to another stage
+   */
+  const handleTransferToStage = () => {
+    if (!selectedStage) {
+      setError("Please select a stage");
+      return;
+    }
+
+    if (!selectedSampleIds?.length) {
+      setError("No samples selected for transfer");
+      return;
+    }
+
+    setError(null);
+    setTransferring(true);
+
+    const requestBody = {
+      sampleItemIds: selectedSampleIds,
+      fromPageId: pageData.id,
+      toPageId: selectedStage.id,
+      status: "PENDING",
+      notes: transferNotes,
+    };
+
+    const completeTransfer = () => {
+      postToOpenElisServer(
+          `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
+          JSON.stringify({
+            sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
+            status: "COMPLETED",
+          }),
+          (status) => {
+            if (status !== 200) {
+              setError("Failed updating sample status");
+              setTransferring(false);
+              return;
+            }
+
+            // refresh UI
+            setSelectedSampleIds([]);
+            loadPageSamples();
+
+            if (onSampleStatusChange) {
+              onSampleStatusChange();
+            }
+
+            setTransferModalOpen(false);
+            setNotificationVisible(true);
+
+            addNotification({
+              kind: NotificationKinds.success,
+              title: "Samples transferred successfully",
+            });
+
+            setTransferring(false);
+          }
+      );
+    };
+
+    postToOpenElisServerJsonResponse(
+        `/rest/notebook/gbd/workflow/transfer`,
+        JSON.stringify(requestBody),
+        (response) => {
+          console.log("Transfer response:", response);
+
+          if (!response?.success) {
+            setError("Transfer failed");
+            setTransferring(false);
+            return;
+          }
+
+          completeTransfer();
+        },
+        () => {
+          setError("Transfer failed");
+          setTransferring(false);
+        }
+    );
+  };
 
   useEffect(() => {
     componentMounted.current = true;
@@ -348,6 +461,14 @@ export const GBDSampleReceptionPageEnhanced = ({
           </Button>
         </PermissionGate>
         <Button
+            kind="primary"
+            renderIcon={Archive}
+            disabled={selectedSampleIds.length === 0}
+            onClick={() => setTransferModalOpen(true)}
+        >
+          Transfer ({selectedSampleIds.length})
+        </Button>
+        <Button
           kind="ghost"
           size="sm"
           renderIcon={Renew}
@@ -555,9 +676,7 @@ export const GBDSampleReceptionPageEnhanced = ({
                 render: (_v, sample) => renderStatus(sample),
               },
             ]}
-          />
-        )}
-      </div>
+          />)}
 
       {/* Manifest Import Modal */}
       <GBDManifestImportModal
@@ -566,6 +685,36 @@ export const GBDSampleReceptionPageEnhanced = ({
         entryId={entryId}
         onImportSuccess={handleManifestImport}
       />
+
+      <Modal
+          open={transferModalOpen}
+          modalHeading="Transfer Samples"
+          primaryButtonText="Transfer"
+          secondaryButtonText="Cancel"
+          onRequestClose={() => setTransferModalOpen(false)}
+          onRequestSubmit={handleTransferToStage}
+      >
+
+        {transferring && <Loading withOverlay />}
+
+        <Dropdown
+            id="stage-select"
+            titleText="Stage"
+            items={stages}
+            selectedItem={selectedStage}
+            itemToString={(item) => item?.label || ""}
+            onChange={({ selectedItem }) => setSelectedStage(selectedItem)}
+        />
+
+        <TextInput
+            id="transfer-notes"
+            labelText="Transfer Notes"
+            value={transferNotes}
+            onChange={(e) => setTransferNotes(e.target.value)}
+        />
+
+        </Modal>
+    </div>
     </div>
   );
 };
