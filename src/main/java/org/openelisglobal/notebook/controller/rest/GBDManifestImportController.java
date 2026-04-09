@@ -255,11 +255,7 @@ public class GBDManifestImportController extends BaseRestController {
             @RequestBody TransferRequest request,
             HttpServletRequest httpRequest) {
 
-        String userId = getSysUserId(httpRequest);
-
-        notebookPageSampleService.bulkUpdateStatus(request.toPageId, request.sampleItemIds, NotebookPageSample.Status.PENDING,userId,true);
         List<Integer> sampleItemIds = request.getSampleItemIds();
-        Integer fromPageId = request.getFromPageId();
         Integer toPageId = request.getToPageId();
         Map<String, Object> response = new HashMap<>();
         if(sampleItemIds == null || sampleItemIds.isEmpty()){
@@ -274,6 +270,8 @@ public class GBDManifestImportController extends BaseRestController {
             return ResponseEntity.badRequest().body(response);
         }
 
+        String userId = getSysUserId(httpRequest);
+        notebookPageSampleService.bulkUpdateStatus(request.toPageId, request.sampleItemIds, NotebookPageSample.Status.PENDING,userId,true);
         response.put("success", true);
         response.put("transferredCount", request.sampleItemIds.size());
         return ResponseEntity.ok(response);

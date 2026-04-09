@@ -7,7 +7,7 @@ import React, {
   useRef,
 } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
-import { Grid, Column, Button, Tile, Tag } from "@carbon/react";
+import { Grid, Column, Button, Modal, Tile, Tag, Dropdown, TextInput, Loading } from "@carbon/react";
 import {
   Upload,
   Edit,
@@ -15,7 +15,6 @@ import {
   Renew,
   CheckmarkFilled,
   Pending,
-  Modal, Dropdown, TextInput, Loading
 } from "@carbon/icons-react";
 import { usePermissions } from "../../../../hooks/usePermissions";
 import { Permissions } from "../../../../constants/roles";
@@ -24,7 +23,7 @@ import { NotificationContext } from "../../../layout/Layout";
 import {
   postToOpenElisServer,
   getFromOpenElisServer,
-  postToOpenElisServerJsonResponse
+  postToOpenElisServerJsonResponse,
 } from "../../../utils/Utils";
 import { NotificationKinds } from "../../../../components/common/CustomNotification";
 import GBDManifestImportModal from "../../workflow/GBDManifestImportModal";
@@ -100,7 +99,7 @@ export const GBDSampleReceptionPageEnhanced = ({
       const pages = response?.pages || [];
 
       const stageOptions = pages
-          .filter((stage) => stage.order === (pageData.order + 2))
+          .filter((stage) => stage.order > pageData.order)
           .map((stage) => ({
             id: String(stage.id),
             label: stage.title,
@@ -124,7 +123,7 @@ export const GBDSampleReceptionPageEnhanced = ({
       setError("No samples selected for transfer");
       return;
     }
-
+    bulkUpdateStatus
     setError(null);
     setTransferring(true);
 
@@ -136,54 +135,18 @@ export const GBDSampleReceptionPageEnhanced = ({
       notes: transferNotes,
     };
 
-    const completeTransfer = () => {
-      postToOpenElisServer(
-          `/rest/notebook/bulk/page/${pageData.id}/samples/status`,
-          JSON.stringify({
-            sampleIds: selectedSampleIds.map((id) => parseInt(id, 10)),
-            status: "COMPLETED",
-          }),
-          (status) => {
-            if (status !== 200) {
-              setError("Failed updating sample status");
-              setTransferring(false);
-              return;
-            }
-
-            // refresh UI
-            setSelectedSampleIds([]);
-            loadPageSamples();
-
-            if (onSampleStatusChange) {
-              onSampleStatusChange();
-            }
-
-            setTransferModalOpen(false);
-            setNotificationVisible(true);
-
-            addNotification({
-              kind: NotificationKinds.success,
-              title: "Samples transferred successfully",
-            });
-
-            setTransferring(false);
-          }
-      );
-    };
-
     postToOpenElisServerJsonResponse(
         `/rest/notebook/gbd/workflow/transfer`,
         JSON.stringify(requestBody),
         (response) => {
-          console.log("Transfer response:", response);
-
           if (!response?.success) {
+            handleMarkComplete();
             setError("Transfer failed");
             setTransferring(false);
             return;
           }
 
-          completeTransfer();
+          setTransferModalOpen(false);
         },
         () => {
           setError("Transfer failed");
@@ -195,11 +158,12 @@ export const GBDSampleReceptionPageEnhanced = ({
   useEffect(() => {
     componentMounted.current = true;
     loadPageSamples();
+    loadStages();
 
     return () => {
       componentMounted.current = false;
     };
-  }, [pageData?.id, loadPageSamples]);
+  }, [loadStages, loadPageSamples]);
 
   const pendingSamples = useMemo(
     () =>
