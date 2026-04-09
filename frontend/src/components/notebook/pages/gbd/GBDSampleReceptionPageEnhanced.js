@@ -7,7 +7,7 @@ import React, {
   useRef,
 } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
-import { Grid, Column, Button, Tile, Tag } from "@carbon/react";
+import { Grid, Column, Button, Modal, Tile, Tag, Dropdown, TextInput, Loading } from "@carbon/react";
 import {
   Upload,
   Edit,
@@ -23,6 +23,7 @@ import { NotificationContext } from "../../../layout/Layout";
 import {
   postToOpenElisServer,
   getFromOpenElisServer,
+  postToOpenElisServerJsonResponse,
 } from "../../../utils/Utils";
 import { NotificationKinds } from "../../../../components/common/CustomNotification";
 import GBDManifestImportModal from "../../workflow/GBDManifestImportModal";
@@ -54,6 +55,7 @@ export const GBDSampleReceptionPageEnhanced = ({
   onSampleUpdate,
   onSampleStatusChange,
   isLoading = false,
+  notebookId
 }) => {
   const intl = useIntl();
   const { setNotificationVisible, addNotification } =
@@ -63,6 +65,12 @@ export const GBDSampleReceptionPageEnhanced = ({
   const [isManifestModalOpen, setIsManifestModalOpen] = useState(false);
   const [selectedSampleIds, setSelectedSampleIds] = useState([]);
   const [pageSamples, setPageSamples] = useState(samples || []);
+  const [transferModalOpen, setTransferModalOpen] = useState(false);
+  const [transferring, setTransferring] = useState(false);
+  const [selectedStage, setSelectedStage] = useState(null);
+  const [stages, setStages] = useState([]);
+  const [transferNotes, setTransferNotes] = useState("");
+  const [error, setError] = useState(null);
 
   const loadPageSamples = useCallback(() => {
     if (!pageData?.id || String(pageData.id).startsWith("default-")) {
@@ -79,14 +87,83 @@ export const GBDSampleReceptionPageEnhanced = ({
     );
   }, [pageData?.id]);
 
+  /**
+   * Load workflow stages
+   */
+  const loadStages = useCallback(() => {
+    if (!notebookId || !pageData?.order) return;
+
+    getFromOpenElisServer(`/rest/notebook/view/${notebookId}`, (response) => {
+      if (!componentMounted.current) return;
+
+      const pages = response?.pages || [];
+
+      const stageOptions = pages
+          .filter((stage) => stage.order > pageData.order)
+          .map((stage) => ({
+            id: String(stage.id),
+            label: stage.title,
+          }));
+
+      setStages(stageOptions);
+    });
+  }, [notebookId, pageData?.order]);
+
+
+  /**
+   * Transfer samples to another stage
+   */
+  const handleTransferToStage = () => {
+    if (!selectedStage) {
+      setError("Please select a stage");
+      return;
+    }
+
+    if (!selectedSampleIds?.length) {
+      setError("No samples selected for transfer");
+      return;
+    }
+    bulkUpdateStatus
+    setError(null);
+    setTransferring(true);
+
+    const requestBody = {
+      sampleItemIds: selectedSampleIds,
+      fromPageId: pageData.id,
+      toPageId: selectedStage.id,
+      status: "PENDING",
+      notes: transferNotes,
+    };
+
+    postToOpenElisServerJsonResponse(
+        `/rest/notebook/gbd/workflow/transfer`,
+        JSON.stringify(requestBody),
+        (response) => {
+          if (!response?.success) {
+            handleMarkComplete();
+            setError("Transfer failed");
+            setTransferring(false);
+            return;
+          }
+
+          setTransferModalOpen(false);
+        },
+        () => {
+          setError("Transfer failed");
+          setTransferring(false);
+        }
+    );
+  };
+
   useEffect(() => {
     componentMounted.current = true;
     loadPageSamples();
+    loadStages();
 
     return () => {
       componentMounted.current = false;
     };
-  }, [pageData?.id, loadPageSamples]);
+  }, [loadStages, loadPageSamples]);
 
   const pendingSamples = useMemo(
     () =>
@@ -348,6 +425,14 @@ export const GBDSampleReceptionPageEnhanced = ({
           </Button>
         </PermissionGate>
         <Button
+            kind="primary"
+            renderIcon={Archive}
+            disabled={selectedSampleIds.length === 0}
+            onClick={() => setTransferModalOpen(true)}
+        >
+          Transfer ({selectedSampleIds.length})
+        </Button>
+        <Button
           kind="ghost"
           size="sm"
           renderIcon={Renew}
@@ -555,9 +640,7 @@ export const GBDSampleReceptionPageEnhanced = ({
                 render: (_v, sample) => renderStatus(sample),
               },
             ]}
-          />
-        )}
-      </div>
+          />)}
 
       {/* Manifest Import Modal */}
       <GBDManifestImportModal
@@ -566,6 +649,36 @@ export const GBDSampleReceptionPageEnhanced = ({
         entryId={entryId}
         onImportSuccess={handleManifestImport}
       />
+
+      <Modal
+          open={transferModalOpen}
+          modalHeading="Transfer Samples"
+          primaryButtonText="Transfer"
+          secondaryButtonText="Cancel"
+          onRequestClose={() => setTransferModalOpen(false)}
+          onRequestSubmit={handleTransferToStage}
+      >
+
+        {transferring && <Loading withOverlay />}
+
+        <Dropdown
+            id="stage-select"
+            titleText="Stage"
+            items={stages}
+            selectedItem={selectedStage}
+            itemToString={(item) => item?.label || ""}
+            onChange={({ selectedItem }) => setSelectedStage(selectedItem)}
+        />
+
+        <TextInput
+            id="transfer-notes"
+            labelText="Transfer Notes"
+            value={transferNotes}
+            onChange={(e) => setTransferNotes(e.target.value)}
+        />
+
+        </Modal>
+    </div>
     </div>
   );
 };
